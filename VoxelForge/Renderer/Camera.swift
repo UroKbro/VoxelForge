@@ -3,18 +3,16 @@ import simd
 struct Camera {
 
     var position = SIMD3<Float>(
-        0,
-        5,
-        15
+        8,
+        10,
+        28
     )
 
-    var rotation = SIMD3<Float>(
-        0,
-        0,
-        0
-    )
+    var yaw: Float = 0
+    var pitch: Float = 0
 
-    var moveSpeed: Float = 5.0
+    let moveSpeed: Float = 0.1
 
-    var rotationSpeed: Float = 1.5
+    let rotationSpeed: Float = 0.03
+    let pitchSpeed: Float = 0.03
 }

@@ -2,40 +2,44 @@
 
 using namespace metal;
 
-struct VertexOut {
+struct Vertex
+{
+    float3 position;
+    float4 color;
+};
 
+struct VertexOut
+{
     float4 position [[position]];
     float4 color;
 };
 
+struct Uniforms
+{
+    float4x4 modelMatrix;
+    float4x4 viewMatrix;
+    float4x4 projectionMatrix;
+};
+
 vertex VertexOut vertexMain(
+    const device Vertex* vertices [[buffer(0)]],
+    const device Uniforms& uniforms [[buffer(1)]],
     uint vertexID [[vertex_id]]
-) {
-
-    float4 positions[3] = {
-
-        float4(-0.5, -0.5, 0, 1),
-        float4( 0.5, -0.5, 0, 1),
-        float4( 0.0,  0.5, 0, 1)
-    };
-
+)
+{
     VertexOut out;
 
-    out.position = positions[vertexID];
+    float4 position = float4(vertices[vertexID].position, 1.0);
+    out.position = uniforms.projectionMatrix * uniforms.viewMatrix * uniforms.modelMatrix * position;
 
-    out.color = float4(
-        0.3,
-        0.8,
-        1.0,
-        1.0
-    );
+    out.color = vertices[vertexID].color;
 
     return out;
 }
 
 fragment float4 fragmentMain(
     VertexOut in [[stage_in]]
-) {
-
+)
+{
     return in.color;
 }

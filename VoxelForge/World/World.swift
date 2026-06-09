@@ -4,6 +4,8 @@ final class World {
     var chunks : [Chunk] = []
     
     init() {
-        chunks.append(TerrainGenerator.generateChunck())
+        for _ in 0..<9 {
+            chunks.append(TerrainGenerator.generateChunck())
+        }
     }
 }

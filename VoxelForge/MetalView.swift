@@ -4,10 +4,14 @@ import MetalKit
 struct MetalView:NSViewRepresentable {
     
     func makeNSView(context: Context) -> MTKView {
-        let view = MTKView()
+        let view = InputMTKView()
         view.device = MTLCreateSystemDefaultDevice()
         view.clearColor = MTLClearColor(red: 0.1, green: 0.1, blue: 0.15, alpha: 1.0)
-       
+        view.depthStencilPixelFormat = .depth32Float
+        view.preferredFramesPerSecond = 60
+        view.enableSetNeedsDisplay = false
+        view.isPaused = false
+        
         
         let renderer = Renderer(view: view)
 
@@ -19,7 +23,7 @@ struct MetalView:NSViewRepresentable {
     }
     
     func updateNSView(_ nsView: MTKView, context: Context) {
-        <#code#>
+        
     }
     
     func makeCoordinator() -> Coordinator {
@@ -31,3 +35,19 @@ struct MetalView:NSViewRepresentable {
     }
 }
 
+final class InputMTKView: MTKView {
+    override var acceptsFirstResponder: Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.makeFirstResponder(self)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        InputManager.shared.handleKey(event.keyCode, isDown: true)
+    }
+
+    override func keyUp(with event: NSEvent) {
+        InputManager.shared.handleKey(event.keyCode, isDown: false)
+    }
+}
