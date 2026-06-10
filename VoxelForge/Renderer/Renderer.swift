@@ -8,7 +8,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     var depthState: MTLDepthStencilState!
     var vertexBuffer: MTLBuffer!
     var uniformBuffer: MTLBuffer!
-    var vertexCount: Int = 0
+    private var chunkMeshes: [ChunkMesh] = []
     var camera = Camera()
     var world = World()
     
@@ -27,7 +27,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         super.init()
         buildDepthState()
         buildPipeline()
-        buildWorldMesh()
+        buildWorldMeshes()
     }
     
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -54,14 +54,9 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         guard let pipelineState else { return }
         encoder.setRenderPipelineState(pipelineState)
+        encoder.setCullMode(.back)
 
         encoder.setDepthStencilState(depthState)
-
-        encoder.setVertexBuffer(
-            vertexBuffer,
-            offset: 0,
-            index: 0
-        )
 
         let forward = SIMD3<Float>(
             sin(camera.yaw) * cos(camera.pitch),
@@ -81,7 +76,9 @@ final class Renderer: NSObject, MTKViewDelegate {
                 aspect: Float(view.drawableSize.width / max(view.drawableSize.height, 1)),
                 nearZ: 0.1,
                 farZ: 100
-            )
+            ),
+            lightDirection: normalize(SIMD3<Float>(-0.4, -1.0, -0.2)),
+            ambientStrength: 0.35
         )
 
         encoder.setVertexBuffer(
@@ -89,13 +86,17 @@ final class Renderer: NSObject, MTKViewDelegate {
             offset: 0,
             index: 1
         )
+        encoder.setFragmentBuffer(
+            uniformBuffer,
+            offset: 0,
+            index: 1
+        )
         memcpy(uniformBuffer.contents(), &uniforms, MemoryLayout<Uniforms>.stride)
 
-        encoder.drawPrimitives(
-            type: .triangle,
-            vertexStart: 0,
-            vertexCount: vertexCount
-        )
+        for mesh in visibleChunkMeshes() {
+            encoder.setVertexBuffer(mesh.vertexBuffer, offset: 0, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: mesh.vertexCount)
+        }
 
         encoder.endEncoding()
         commandBuffer?.present(drawable)
@@ -179,10 +180,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         descriptor.isDepthWriteEnabled = true
         depthState = device.makeDepthStencilState(descriptor: descriptor)
     }
-    func buildWorldMesh() {
-        var vertices: [Vertex] = []
+    func buildWorldMeshes() {
         let chunksPerAxis = 3
         let chunkOffset = Float(Chunk.size) * Float(chunksPerAxis - 1) * 0.5
+        chunkMeshes.removeAll(keepingCapacity: true)
 
         for (chunkIndex, chunk) in world.chunks.enumerated() {
             let chunkX = chunkIndex % chunksPerAxis
@@ -193,24 +194,39 @@ final class Renderer: NSObject, MTKViewDelegate {
                 Float(chunkZ * Chunk.size) - chunkOffset
             )
 
+            var vertices: [Vertex] = []
+
             for x in 0..<Chunk.size {
                 for y in 0..<Chunk.size {
                     for z in 0..<Chunk.size {
                         if chunk.voxelAt(x: x, y: y, z: z).type == 0 { continue }
-
                         let base = worldOffset + SIMD3<Float>(Float(x), Float(y) - 2, Float(z))
                         appendVoxelFaces(into: &vertices, base: base)
                     }
                 }
             }
+
+            guard !vertices.isEmpty,
+                  let vertexBuffer = device.makeBuffer(bytes: vertices, length: MemoryLayout<Vertex>.stride * vertices.count)
+            else { continue }
+
+            chunkMeshes.append(
+                ChunkMesh(position: worldOffset, vertexBuffer: vertexBuffer, vertexCount: vertices.count)
+            )
         }
 
-        vertexCount = vertices.count
-        vertexBuffer = device.makeBuffer(bytes: vertices, length: MemoryLayout<Vertex>.stride * vertices.count)
         uniformBuffer = device.makeBuffer(
             length: MemoryLayout<Uniforms>.stride,
             options: .storageModeShared
         )
+    }
+
+    private func visibleChunkMeshes() -> [ChunkMesh] {
+        let maxDistance: Float = 80
+        return chunkMeshes.filter { mesh in
+            let delta = mesh.position - camera.position
+            return length(delta) < maxDistance
+        }
     }
 
     func appendVoxelFaces(into vertices: inout [Vertex], base: SIMD3<Float>) {
@@ -224,24 +240,30 @@ final class Renderer: NSObject, MTKViewDelegate {
         let p011 = base + SIMD3<Float>(0, 1, 1)
         let p111 = base + SIMD3<Float>(1, 1, 1)
 
-        addQuad(&vertices, p000, p100, p110, p010, c)
-        addQuad(&vertices, p101, p001, p011, p111, c)
-        addQuad(&vertices, p001, p000, p010, p011, c)
-        addQuad(&vertices, p100, p101, p111, p110, c)
-        addQuad(&vertices, p010, p110, p111, p011, c)
-        addQuad(&vertices, p001, p101, p100, p000, c)
+        addQuad(&vertices, p000, p100, p110, p010, c, SIMD3<Float>(0, 0, 1))
+        addQuad(&vertices, p101, p001, p011, p111, c, SIMD3<Float>(0, 0, -1))
+        addQuad(&vertices, p001, p000, p010, p011, c, SIMD3<Float>(-1, 0, 0))
+        addQuad(&vertices, p100, p101, p111, p110, c, SIMD3<Float>(1, 0, 0))
+        addQuad(&vertices, p010, p110, p111, p011, c, SIMD3<Float>(0, 1, 0))
+        addQuad(&vertices, p001, p101, p100, p000, c, SIMD3<Float>(0, -1, 0))
     }
 
-    func addQuad(_ vertices: inout [Vertex], _ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c1: SIMD3<Float>, _ d: SIMD3<Float>, _ color: SIMD4<Float>) {
+    func addQuad(_ vertices: inout [Vertex], _ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c1: SIMD3<Float>, _ d: SIMD3<Float>, _ color: SIMD4<Float>, _ normal: SIMD3<Float>) {
         vertices.append(contentsOf: [
-            Vertex(position: a, color: color),
-            Vertex(position: b, color: color),
-            Vertex(position: c1, color: color),
-            Vertex(position: a, color: color),
-            Vertex(position: c1, color: color),
-            Vertex(position: d, color: color)
+            Vertex(position: a, color: color, normal: normal),
+            Vertex(position: b, color: color, normal: normal),
+            Vertex(position: c1, color: color, normal: normal),
+            Vertex(position: a, color: color, normal: normal),
+            Vertex(position: c1, color: color, normal: normal),
+            Vertex(position: d, color: color, normal: normal)
         ])
     }
+}
+
+private struct ChunkMesh {
+    let position: SIMD3<Float>
+    let vertexBuffer: MTLBuffer
+    let vertexCount: Int
 }
 
 private func matrix4x4_rotation(radians: Float, axis: SIMD3<Float>) -> matrix_float4x4 {
