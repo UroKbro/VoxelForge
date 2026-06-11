@@ -93,7 +93,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         )
         memcpy(uniformBuffer.contents(), &uniforms, MemoryLayout<Uniforms>.stride)
 
-        for mesh in visibleChunkMeshes() {
+        let viewProjection = uniforms.projectionMatrix * uniforms.viewMatrix
+
+        for mesh in visibleChunkMeshes(viewProjection: viewProjection) {
             encoder.setVertexBuffer(mesh.vertexBuffer, offset: 0, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: mesh.vertexCount)
         }
@@ -221,12 +223,41 @@ final class Renderer: NSObject, MTKViewDelegate {
         )
     }
 
-    private func visibleChunkMeshes() -> [ChunkMesh] {
-        let maxDistance: Float = 80
-        return chunkMeshes.filter { mesh in
-            let delta = mesh.position - camera.position
-            return length(delta) < maxDistance
+    private func visibleChunkMeshes(viewProjection: matrix_float4x4) -> [ChunkMesh] {
+        chunkMeshes.filter { mesh in
+            let minPoint = mesh.position
+            let maxPoint = mesh.position + SIMD3<Float>(Float(Chunk.size), Float(Chunk.size), Float(Chunk.size))
+            return chunkIntersectsFrustum(minPoint: minPoint, maxPoint: maxPoint, viewProjection: viewProjection)
         }
+    }
+
+    private func chunkIntersectsFrustum(
+        minPoint: SIMD3<Float>,
+        maxPoint: SIMD3<Float>,
+        viewProjection: matrix_float4x4
+    ) -> Bool {
+        let corners: [SIMD3<Float>] = [
+            SIMD3<Float>(minPoint.x, minPoint.y, minPoint.z),
+            SIMD3<Float>(maxPoint.x, minPoint.y, minPoint.z),
+            SIMD3<Float>(minPoint.x, maxPoint.y, minPoint.z),
+            SIMD3<Float>(maxPoint.x, maxPoint.y, minPoint.z),
+            SIMD3<Float>(minPoint.x, minPoint.y, maxPoint.z),
+            SIMD3<Float>(maxPoint.x, minPoint.y, maxPoint.z),
+            SIMD3<Float>(minPoint.x, maxPoint.y, maxPoint.z),
+            SIMD3<Float>(maxPoint.x, maxPoint.y, maxPoint.z)
+        ]
+
+        for corner in corners {
+            let clip = viewProjection * SIMD4<Float>(corner.x, corner.y, corner.z, 1)
+            if clip.w > 0 {
+                let ndc = SIMD3<Float>(clip.x, clip.y, clip.z) / clip.w
+                if abs(ndc.x) <= 1 && abs(ndc.y) <= 1 && abs(ndc.z) <= 1 {
+                    return true
+                }
+            }
+        }
+
+        return false
     }
 
     func appendVoxelFaces(into vertices: inout [Vertex], base: SIMD3<Float>) {
