@@ -11,6 +11,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var chunkMeshes: [ChunkMesh] = []
     var camera = Camera()
     var world = World()
+    private var timeOfDay: Float = 0.0
     
     init(view: MTKView) {
         guard let device = view.device else {
@@ -36,6 +37,41 @@ final class Renderer: NSObject, MTKViewDelegate {
     
     func draw(in view: MTKView) {
         updateCamera()
+        
+        timeOfDay += 0.005
+        let sunHeight = sin(timeOfDay)
+        
+        let skyColor: MTLClearColor
+        let ambientStrength: Float
+        let lightDir: SIMD3<Float>
+        
+        if sunHeight > 0.2 {
+            let t = min(1.0, (sunHeight - 0.2) / 0.4)
+            skyColor = MTLClearColor(
+                red: 0.4 * Double(t) + 0.8 * Double(1.0 - t),
+                green: 0.6 * Double(t) + 0.4 * Double(1.0 - t),
+                blue: 0.9 * Double(t) + 0.3 * Double(1.0 - t),
+                alpha: 1.0
+            )
+            ambientStrength = 0.35 * t + 0.25 * (1.0 - t)
+            lightDir = normalize(SIMD3<Float>(cos(timeOfDay), -sunHeight, -0.2))
+        } else if sunHeight > -0.2 {
+            let t = (sunHeight + 0.2) / 0.4
+            skyColor = MTLClearColor(
+                red: 0.8 * Double(t) + 0.02 * Double(1.0 - t),
+                green: 0.4 * Double(t) + 0.02 * Double(1.0 - t),
+                blue: 0.3 * Double(t) + 0.08 * Double(1.0 - t),
+                alpha: 1.0
+            )
+            ambientStrength = 0.25 * t + 0.1 * (1.0 - t)
+            lightDir = normalize(SIMD3<Float>(cos(timeOfDay), -max(0.01, sunHeight), -0.2))
+        } else {
+            skyColor = MTLClearColor(red: 0.02, green: 0.02, blue: 0.08, alpha: 1.0)
+            ambientStrength = 0.1
+            lightDir = normalize(SIMD3<Float>(cos(timeOfDay), sunHeight, -0.2))
+        }
+        view.clearColor = skyColor
+
         guard
             let drawable = view.currentDrawable,
             let descriptor = view.currentRenderPassDescriptor
@@ -77,8 +113,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                 nearZ: 0.1,
                 farZ: 100
             ),
-            lightDirection: normalize(SIMD3<Float>(-0.4, -1.0, -0.2)),
-            ambientStrength: 0.35
+            lightDirection: lightDir,
+            ambientStrength: ambientStrength
         )
 
         encoder.setVertexBuffer(
@@ -183,7 +219,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         depthState = device.makeDepthStencilState(descriptor: descriptor)
     }
     func buildWorldMeshes() {
-        let chunksPerAxis = 3
+        let chunksPerAxis = world.chunksPerAxis
         let chunkOffset = Float(Chunk.size) * Float(chunksPerAxis - 1) * 0.5
         chunkMeshes.removeAll(keepingCapacity: true)
 
@@ -201,9 +237,38 @@ final class Renderer: NSObject, MTKViewDelegate {
             for x in 0..<Chunk.size {
                 for y in 0..<Chunk.size {
                     for z in 0..<Chunk.size {
-                        if chunk.voxelAt(x: x, y: y, z: z).type == 0 { continue }
+                        let voxel = chunk.voxelAt(x: x, y: y, z: z)
+                        if voxel.type == 0 { continue }
                         let base = worldOffset + SIMD3<Float>(Float(x), Float(y) - 2, Float(z))
-                        appendVoxelFaces(into: &vertices, base: base)
+                        let color = colorFor(voxelType: voxel.type)
+                        
+                        let p000 = base + SIMD3<Float>(0, 0, 0)
+                        let p100 = base + SIMD3<Float>(1, 0, 0)
+                        let p010 = base + SIMD3<Float>(0, 1, 0)
+                        let p110 = base + SIMD3<Float>(1, 1, 0)
+                        let p001 = base + SIMD3<Float>(0, 0, 1)
+                        let p101 = base + SIMD3<Float>(1, 0, 1)
+                        let p011 = base + SIMD3<Float>(0, 1, 1)
+                        let p111 = base + SIMD3<Float>(1, 1, 1)
+
+                        if !isSolid(chunkX: chunkX, chunkZ: chunkZ, x: x, y: y, z: z - 1) {
+                            addQuad(&vertices, p000, p100, p110, p010, color, SIMD3<Float>(0, 0, 1))
+                        }
+                        if !isSolid(chunkX: chunkX, chunkZ: chunkZ, x: x, y: y, z: z + 1) {
+                            addQuad(&vertices, p101, p001, p011, p111, color, SIMD3<Float>(0, 0, -1))
+                        }
+                        if !isSolid(chunkX: chunkX, chunkZ: chunkZ, x: x - 1, y: y, z: z) {
+                            addQuad(&vertices, p001, p000, p010, p011, color, SIMD3<Float>(-1, 0, 0))
+                        }
+                        if !isSolid(chunkX: chunkX, chunkZ: chunkZ, x: x + 1, y: y, z: z) {
+                            addQuad(&vertices, p100, p101, p111, p110, color, SIMD3<Float>(1, 0, 0))
+                        }
+                        if !isSolid(chunkX: chunkX, chunkZ: chunkZ, x: x, y: y + 1, z: z) {
+                            addQuad(&vertices, p010, p110, p111, p011, color, SIMD3<Float>(0, 1, 0))
+                        }
+                        if !isSolid(chunkX: chunkX, chunkZ: chunkZ, x: x, y: y - 1, z: z) {
+                            addQuad(&vertices, p001, p101, p100, p000, color, SIMD3<Float>(0, -1, 0))
+                        }
                     }
                 }
             }
@@ -221,6 +286,54 @@ final class Renderer: NSObject, MTKViewDelegate {
             length: MemoryLayout<Uniforms>.stride,
             options: .storageModeShared
         )
+    }
+
+    private func isSolid(chunkX: Int, chunkZ: Int, x: Int, y: Int, z: Int) -> Bool {
+        if y < 0 || y >= Chunk.size { return false }
+        
+        var cx = chunkX
+        var cz = chunkZ
+        var lx = x
+        var lz = z
+        
+        if lx < 0 {
+            cx -= 1
+            lx = Chunk.size - 1
+        } else if lx >= Chunk.size {
+            cx += 1
+            lx = 0
+        }
+        
+        if lz < 0 {
+            cz -= 1
+            lz = Chunk.size - 1
+        } else if lz >= Chunk.size {
+            cz += 1
+            lz = 0
+        }
+        
+        let chunksPerAxis = world.chunksPerAxis
+        if cx < 0 || cx >= chunksPerAxis || cz < 0 || cz >= chunksPerAxis {
+            return false
+        }
+        
+        let idx = cz * chunksPerAxis + cx
+        return world.chunks[idx].voxelAt(x: lx, y: y, z: lz).type != 0
+    }
+
+    private func colorFor(voxelType: UInt8) -> SIMD4<Float> {
+        switch voxelType {
+        case Voxel.grass:
+            return SIMD4<Float>(0.2, 0.8, 0.3, 1.0)
+        case Voxel.dirt:
+            return SIMD4<Float>(0.5, 0.35, 0.2, 1.0)
+        case Voxel.stone:
+            return SIMD4<Float>(0.5, 0.5, 0.5, 1.0)
+        case Voxel.sand:
+            return SIMD4<Float>(0.92, 0.82, 0.6, 1.0)
+        default:
+            return SIMD4<Float>(1.0, 1.0, 1.0, 1.0)
+        }
     }
 
     private func visibleChunkMeshes(viewProjection: matrix_float4x4) -> [ChunkMesh] {
@@ -258,25 +371,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         return false
-    }
-
-    func appendVoxelFaces(into vertices: inout [Vertex], base: SIMD3<Float>) {
-        let c = SIMD4<Float>(0.1, 0.8, 0.2, 1)
-        let p000 = base + SIMD3<Float>(0, 0, 0)
-        let p100 = base + SIMD3<Float>(1, 0, 0)
-        let p010 = base + SIMD3<Float>(0, 1, 0)
-        let p110 = base + SIMD3<Float>(1, 1, 0)
-        let p001 = base + SIMD3<Float>(0, 0, 1)
-        let p101 = base + SIMD3<Float>(1, 0, 1)
-        let p011 = base + SIMD3<Float>(0, 1, 1)
-        let p111 = base + SIMD3<Float>(1, 1, 1)
-
-        addQuad(&vertices, p000, p100, p110, p010, c, SIMD3<Float>(0, 0, 1))
-        addQuad(&vertices, p101, p001, p011, p111, c, SIMD3<Float>(0, 0, -1))
-        addQuad(&vertices, p001, p000, p010, p011, c, SIMD3<Float>(-1, 0, 0))
-        addQuad(&vertices, p100, p101, p111, p110, c, SIMD3<Float>(1, 0, 0))
-        addQuad(&vertices, p010, p110, p111, p011, c, SIMD3<Float>(0, 1, 0))
-        addQuad(&vertices, p001, p101, p100, p000, c, SIMD3<Float>(0, -1, 0))
     }
 
     func addQuad(_ vertices: inout [Vertex], _ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c1: SIMD3<Float>, _ d: SIMD3<Float>, _ color: SIMD4<Float>, _ normal: SIMD3<Float>) {
